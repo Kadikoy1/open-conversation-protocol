@@ -2,12 +2,13 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { authenticate, Env, issue, oauth, requireAdmin } from './auth';
 import { ingest } from './agentmail';
-import { body, external, HttpError, id, json, seq, title } from './http';
+import { body, external, HttpError, id, json, rawBody, seq, title } from './http';
 import { mcp } from './mcp';
+import { rpcMethod, responseCategory } from './mcp-diagnostics';
 import { Store } from './store';
 import { accessScope, clientIdLimit } from './oauth-token';
 
-type AppEnv = { Bindings: Env; Variables: { participant: string } };
+type AppEnv = { Bindings: Env; Variables: { participant: string; rpcMethod?: string; anonymousToolCall?: boolean } };
 const app = new Hono<AppEnv>();
 const expiry = z.number().int().min(1).max(720).default(168);
 const role = z.enum(['reader', 'writer']);
@@ -19,6 +20,26 @@ app.use('*', async (c, next) => {
   c.header('Cache-Control', 'no-store');
   c.header('X-Content-Type-Options', 'nosniff');
   c.header('Referrer-Policy', 'no-referrer');
+});
+
+const diagnosticsPaths = ['/mcp', '/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/mcp'];
+
+function diagnosticsEnabled(env: Env) {
+  return env.OCP_MCP_DIAGNOSTICS === '1' && env.OCP_PUBLIC_ORIGIN === 'https://staging.openconversationprotocol.org';
+}
+
+app.use('*', async (c, next) => {
+  await next();
+  if (!diagnosticsEnabled(c.env) || !diagnosticsPaths.includes(c.req.path)) return;
+  const method = c.get('rpcMethod');
+  console.log(JSON.stringify({
+    event: 'ocp_mcp_diagnostic',
+    method: ['GET', 'POST', 'DELETE', 'HEAD', 'OPTIONS'].includes(c.req.method) ? c.req.method : 'OTHER',
+    path: c.req.path,
+    status: c.res.status,
+    rpcMethod: method ?? null,
+    category: await responseCategory(c.res, method, c.get('anonymousToolCall')),
+  }));
 });
 
 async function throttle(c: Context<AppEnv>, binding: RateLimit, key: string) {
@@ -191,6 +212,8 @@ function resourceMetadata(c: Context<AppEnv>) {
 app.get('/.well-known/oauth-protected-resource/mcp', resourceMetadata);
 app.get('/.well-known/oauth-protected-resource', resourceMetadata);
 app.all('/mcp', async c => {
+  const raw = diagnosticsEnabled(c.env) && c.req.method === 'POST' ? await rawBody(c.req.raw) : undefined;
+  if (raw !== undefined) c.set('rpcMethod', rpcMethod(raw));
   const config = oauth(c.env);
   const origin = c.req.header('Origin');
   if (origin && origin !== (c.env.OCP_PUBLIC_ORIGIN ?? new URL(c.req.url).origin)) {
@@ -200,7 +223,8 @@ app.all('/mcp', async c => {
     ? 'Bearer realm="ocp", resource_metadata="' + config.discovery + '", scope="' + accessScope + '"'
     : 'Bearer realm="ocp"';
   if (config && c.req.method === 'POST' && !c.req.header('Authorization')) {
-    return mcp(c.req.raw, null, challenge);
+    if (c.get('rpcMethod') === 'tools/call') c.set('anonymousToolCall', true);
+    return mcp(c.req.raw, null, challenge, raw);
   }
   let participant: string;
   try {
@@ -216,7 +240,7 @@ app.all('/mcp', async c => {
   if (c.req.method !== 'POST') return c.body(null, 405, { Allow: 'POST' });
   const limited = await throttle(c, c.env.PARTICIPANT_LIMIT, participant);
   if (limited) return limited;
-  return mcp(c.req.raw, new Store(c.env.DB, participant), config ? challenge : undefined);
+  return mcp(c.req.raw, new Store(c.env.DB, participant), config ? challenge : undefined, raw);
 });
 
 export default app;
