@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 export class HttpError extends Error {
-  constructor(readonly status: 400 | 401 | 403 | 404 | 409 | 413 | 415 | 503, message: string) {
+  constructor(readonly status: 400 | 401 | 403 | 404 | 409 | 413 | 415 | 503, message: string, readonly diagnosticCategory?: string) {
     super(message);
   }
 }

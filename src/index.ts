@@ -8,7 +8,7 @@ import { rpcMethod, responseCategory } from './mcp-diagnostics';
 import { Store } from './store';
 import { accessScope, clientIdLimit } from './oauth-token';
 
-type AppEnv = { Bindings: Env; Variables: { participant: string; rpcMethod?: string; anonymousToolCall?: boolean } };
+type AppEnv = { Bindings: Env; Variables: { participant: string; rpcMethod?: string; anonymousToolCall?: boolean; authDiagnostic?: string } };
 const app = new Hono<AppEnv>();
 const expiry = z.number().int().min(1).max(720).default(168);
 const role = z.enum(['reader', 'writer']);
@@ -38,7 +38,7 @@ app.use('*', async (c, next) => {
     path: c.req.path,
     status: c.res.status,
     rpcMethod: method ?? null,
-    category: await responseCategory(c.res, method, c.get('anonymousToolCall')),
+    category: c.get('authDiagnostic') ?? await responseCategory(c.res, method, c.get('anonymousToolCall')),
   }));
 });
 
@@ -58,7 +58,10 @@ app.use('*', async (c, next) => {
 });
 
 app.onError((error, c) => {
-  if (error instanceof HttpError) return c.json({ error: error.message }, error.status);
+  if (error instanceof HttpError) {
+    if (error.diagnosticCategory) c.set('authDiagnostic', error.diagnosticCategory);
+    return c.json({ error: error.message }, error.status);
+  }
   if (error instanceof z.ZodError) {
     return c.json({ error: 'Invalid input', fields: error.issues.map(issue => issue.path.join('.')) }, 400);
   }
