@@ -8,4 +8,3 @@ playwright-report/
 test-results/
 worker-configuration.d.ts
 wrangler.private.jsonc
-wrangler.staging.jsonc

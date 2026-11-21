@@ -11,7 +11,7 @@ OCP persists the conversation in D1. ChatGPT and Claude connect as separate part
 
 ### Review of the merged code
 
-The merged implementation in `4a1d709` has all three D1 migrations. Migration 0001 creates the conversation and membership tables. Migration 0002 adds credentials and bridge mappings. Migration 0003 adds client-bound OAuth enrollments and email sender fields. Start staging with an empty database. The Worker validates membership in D1 on each conversation operation. Closing a chat or logging out leaves D1 history intact. The sample config has a placeholder D1 ID and no public route. The staging config uses separate Worker and D1 names and separate rate-limit namespace IDs.
+The merged implementation in `4a1d709` has all three D1 migrations. Migration 0001 creates the conversation and membership tables. Migration 0002 adds credentials and bridge mappings. Migration 0003 adds client-bound OAuth enrollments and email sender fields. Start staging with an empty database. The Worker validates membership in D1 on each conversation operation. Closing a chat or logging out leaves D1 history intact. The rehearsal template uses a placeholder D1 ID and has no route. The deployment config targets the existing staging database and a dedicated hostname. It uses separate Worker and D1 names and staging rate-limit namespace IDs.
 
 Remaining live gates are an owned HTTPS hostname protected at the edge, a correctly configured issuer, and acceptance of actual tokens issued to both hosted clients. The OAuth tests use fixtures and the MCP tests use the SDK. The combined flow with hosted accounts, provider UI and edge policies still requires approval and verification. OCP uses bearer tokens, supports a single configured issuer per Worker, and has no in-app retention or conversation deletion workflow. Use synthetic data and an isolated database for this demo.
 
@@ -42,7 +42,7 @@ Remaining live gates are an owned HTTPS hostname protected at the edge, a correc
 
 ### Prepare and validate locally
 
-Use Node.js 24, npm, Bash, curl and jq for the commands below. Execute from the repository root. The configuration template has no route and uses a dummy D1 UUID. Both Cloudflare default URLs are disabled.
+Use Node.js 24, npm, Bash, curl and jq for the commands below. Execute from the repository root. The rehearsal template has no route and uses a dummy D1 UUID. The checked-in deployment config, `wrangler.staging.jsonc`, targets only Worker `ocp-staging`, Custom Domain `staging.openconversationprotocol.org` and D1 binding `DB` for `ocp-staging-db` (`ee8696bf-7a1f-408e-8db6-73449a87bdff`). Both default URLs are disabled.
 
 ```bash
 npm ci
@@ -50,7 +50,7 @@ npx playwright install chromium
 npm run typecheck
 npm test
 npm run build
-npx wrangler deploy --dry-run --config wrangler.staging.example.jsonc --outdir dist/staging
+npx wrangler deploy --dry-run --config wrangler.staging.jsonc --outdir dist/staging
 npx wrangler d1 migrations apply DB --local --config wrangler.staging.example.jsonc --persist-to .wrangler/staging-preflight
 npx wrangler d1 migrations list DB --local --config wrangler.staging.example.jsonc --persist-to .wrangler/staging-preflight
 ```
@@ -59,31 +59,33 @@ Expect migrations 0001, 0002 and 0003 to apply. The subsequent list should repor
 
 ### Configure and deploy only after approval
 
-1. Sign in using the approved operator account and verify the account using `npx wrangler whoami`. If a new database was approved and one does not already exist for staging, run `npx wrangler d1 create ocp-v01-staging` and record its UUID. Use `npx wrangler d1 list` to double-check the account, database name and UUID. Never select a production database.
-2. Run `cp wrangler.staging.example.jsonc wrangler.staging.jsonc`. In the ignored copy, set the D1 UUID and database name, and replace all example origins and Auth0 values with the exact ones below. Confirm the rate-limit namespace IDs are unused in the account before adopting `1101` and `1102`. Keep the staging Worker name, account or isolation boundary, database, issuer tenant, rate-limit namespaces and secrets distinct from future production. Set `account_id` in the ignored config if the login can access multiple Cloudflare accounts.
+1. Sign in using the approved Cloudflare account with `npx wrangler login`, or configure a scoped `CLOUDFLARE_API_TOKEN` through a secret store. Use the account that owns both the database and the zone. If the credential can access multiple accounts, set `CLOUDFLARE_ACCOUNT_ID` to the verified staging account ID before using Wrangler. The first deployment needs Workers Admin for a new Worker (or Editor for an existing Worker) and Workers Routes Write on the zone. For an API token, grant Workers Scripts Write and D1 Write on the staging account, plus Workers Routes Write and Zone Read on `openconversationprotocol.org`. Use a separate dashboard operator for edge-policy edits if needed. [Workers authorization](https://developers.cloudflare.com/workers/authorization/workers/), [D1 API permissions](https://developers.cloudflare.com/d1/observability/debug-d1/)
+2. Run these read-only checks before approving any remote write. Confirm the database UUID and the owning account in the output and confirm staging rate-limit namespace IDs `1101` and `1102` are reserved for staging. Verify that `openconversationprotocol.org` is an active zone in the same account and that the staging hostname is available. If an existing DNS record or Custom Domain conflicts, stop and review ownership before making changes.
+
+   ```bash
+   npx wrangler whoami
+   npx wrangler d1 info ocp-staging-db --config wrangler.staging.jsonc
+   ```
+
 3. Before attaching the hostname, configure HTTPS enforcement on it and restrict `/api/admin/*` with a WAF IP allowlist or path-scoped Cloudflare Access. Keep `/mcp` and the OAuth discovery paths reachable by both providers. Example WAF **Block** rule, replacing the test address and hostname with approved values:
 
    ```
-   (http.host eq "ocp-staging.example.com" and starts_with(http.request.uri.path, "/api/admin/") and not ip.src in {192.0.2.10/32})
+   (http.host eq "staging.openconversationprotocol.org" and starts_with(http.request.uri.path, "/api/admin/") and not ip.src in {192.0.2.10/32})
    ```
 
    The Worker independently requires an admin secret and applies pre-auth IP limits and participant limits. A broad bot challenge or interactive Access prompt can break hosted MCP clients. Leave the webhook secret unset and optionally block the AgentMail path at the edge. [Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/), [Workers rate limits](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)
-4. Add a top-level route entry to the ignored config for the approved hostname. Cloudflare creates the DNS record and certificate for a Custom Domain in an active zone. Match the exact hostname in the variable, the OAuth resource ID and the route.
-
-   ```jsonc
-   "routes": [{ "pattern": "ocp-staging.example.com", "custom_domain": true }],
-   ```
+4. The committed configuration declares the Custom Domain. After approval, `wrangler deploy` attaches it and Cloudflare manages the associated DNS record and certificate. This is the step that activates the hostname.
 
    | Setting | Value |
    | --- | --- |
-   | `OCP_PUBLIC_ORIGIN` | `https://<staging-host>` with no trailing slash |
+   | `OCP_PUBLIC_ORIGIN` | `https://staging.openconversationprotocol.org` (already set) |
    | `OAUTH_ISSUER` | Exact tenant discovery issuer, including its slash if present |
    | `OAUTH_JWKS_URL` | Exact tenant discovery `jwks_uri` |
    | `OCP_ADMIN_TOKEN` | Secret generated independently for staging, 64 lowercase hex characters |
    | `AGENTMAIL_WEBHOOK_SECRET` | Leave unset for this experiment |
 
-   Save the admin secret in the operator's vault and place it in a vault-managed or temporary ignored `.env.staging` file. A secure local generator is `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`. Set permissions so only the operator can read the file. OAuth client secrets, when applicable, belong in the issuer and respective host setup, outside the Worker config.
-5. Validate the approved target, review pending migrations, then apply them before publishing the Worker. Remove `.env.staging` from the workstation when the deployment ends according to your secret-handling process.
+   Save the admin secret in the operator's vault and place it in a vault-managed or temporary ignored `.env.staging` file. A secure local generator is `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`. Set permissions so only the operator can read the file. OAuth client secrets, when applicable, belong in the issuer and host setup. The tracked config leaves OAuth disabled until both issuer and JWKS settings are supplied. For an approved MCP deployment, append `--var "OAUTH_ISSUER:$OCP_STAGING_ISSUER" --var "OAUTH_JWKS_URL:$OCP_STAGING_JWKS_URL"` to the deploy command in Bash, setting both shell variables from issuer discovery first. Supply both variables on subsequent CLI deployments as well.
+5. After remote-write approval, validate the approved target, review pending migrations, then apply them before publishing the Worker. On a fresh database, Wrangler’s remote migration list can initialize its migration tracking table. Treat the first remote list as a database write. Remove `.env.staging` from the workstation when the deployment ends according to your secret-handling process.
 
    ```bash
    npx wrangler deploy --dry-run --config wrangler.staging.jsonc --outdir dist/staging
@@ -96,13 +98,13 @@ Expect migrations 0001, 0002 and 0003 to apply. The subsequent list should repor
 6. Verify certificate and hostname, app discovery, and gate behavior. Check the admin path from both an approved and an unapproved network. No credentials should be sent by HTTP. Verify the Worker and D1 identifiers in the Cloudflare dashboard, and ensure there is no route on a production hostname.
 
    ```bash
-   OCP='https://ocp-staging.example.com'
+   OCP='https://staging.openconversationprotocol.org'
    curl --fail-with-body --silent --show-error "$OCP/.well-known/oauth-protected-resource/mcp" | jq .
    curl --silent --show-error --output /dev/null --write-out '%{http_code}\n' "$OCP/api/conversations"
    curl --silent --show-error --dump-header - --output /dev/null "$OCP/mcp"
    ```
 
-   The discovery resource must be `$OCP/mcp` and the server list must name the exact issuer. Anonymous REST and an unauthenticated MCP GET should return 401. The MCP challenge must advertise discovery and `ocp:access`. Anonymous MCP POST initialization and discovery can return public tool schemas. An anonymous tool call must request authentication and return no conversation data.
+   With OAuth configured, the discovery resource must be `$OCP/mcp` and the server list must name the exact issuer. Before then, OAuth discovery returns 404. Anonymous REST and an unauthenticated MCP GET should return 401. The MCP challenge must advertise discovery and `ocp:access`. Anonymous MCP POST initialization and discovery can return public tool schemas. An anonymous tool call must request authentication and return no conversation data.
 
 ## Connect the two hosts
 

@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  // Copy to wrangler.staging.jsonc, set the approved D1 ID, and follow docs/staging.md.
+  // Local-only rehearsal template. Use wrangler.staging.jsonc for the approved OCP target.
   // The template has no route and both default endpoints are disabled.
   "name": "ocp-v01-staging",
   "main": "src/index.ts",
