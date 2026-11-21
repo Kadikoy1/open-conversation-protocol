@@ -306,6 +306,44 @@ test('read-only staging runner verifies anonymous denial and lists with a local 
   await expect(listStagingConversations('invalid-fixture-token', fetcher)).rejects.toThrow();
 });
 
+test('MCP 2026 discovery and tool listing work without a legacy handshake', async ({ request }) => {
+  const version = '2026-07-28';
+  const call = (method, params = {}, token) => request.post('/mcp', {
+    headers: {
+      Accept: 'application/json, text/event-stream',
+      'MCP-Protocol-Version': version,
+      'MCP-Method': method,
+      ...(params.name ? { 'MCP-Name': params.name } : {}),
+      ...(token ? auth(token) : {}),
+    },
+    data: { jsonrpc: '2.0', id: 1, method,
+      params: { ...params, _meta: { 'io.modelcontextprotocol/protocolVersion': version } } },
+  });
+
+  const rejected = await call('server/discover', {}, 'invalid-fixture-bearer');
+  expect(rejected.status()).toBe(401);
+  const discovery = await call('server/discover');
+  expect(discovery.status()).toBe(200);
+  expect(discovery.headers()['mcp-session-id']).toBeUndefined();
+  const discovered = (await discovery.json()).result;
+  expect(discovered.supportedVersions).toContain(version);
+  expect(discovered.capabilities.tools).toBeDefined();
+
+  const listing = await call('tools/list');
+  expect(listing.status()).toBe(200);
+  const { tools } = (await listing.json()).result;
+  expect(tools.map(tool => tool.name).sort()).toEqual(['create_conversation', 'list_conversations', 'post_message', 'read_messages']);
+  expect(tools.every(tool => tool._meta.securitySchemes[0].scopes.includes('ocp:access'))).toBe(true);
+  const denied = await call('tools/call', { name: 'list_conversations', arguments: {} });
+  expect((await denied.json()).result).toMatchObject({ isError: true, _meta: { 'mcp/www_authenticate': expect.any(Array) } });
+
+  const member = await participant(request, 'app');
+  const authenticated = await call('tools/call', { name: 'list_conversations', arguments: {} }, member.token);
+  expect(authenticated.status()).toBe(200);
+  const result = (await authenticated.json()).result;
+  expect(JSON.parse(result.content[0].text).conversations).toEqual([]);
+});
+
 test('sustained requests from a participant receive 429 with retry information', async ({ request }) => {
   const member = await participant(request);
   let limited;

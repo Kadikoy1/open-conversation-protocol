@@ -1,6 +1,6 @@
 import { createRemoteJWKSet } from 'jose';
 import { HttpError } from './http.ts';
-import { verifyAccessToken } from './oauth-token.ts';
+import { tokenFailureCategory, verifyAccessToken } from './oauth-token.ts';
 
 export type Env = Pick<Cloudflare.Env, 'DB' | 'REQUEST_LIMIT' | 'PARTICIPANT_LIMIT'> & {
   OCP_ADMIN_TOKEN?: string;
@@ -64,7 +64,9 @@ export function oauth(env: Env) {
 
 export async function authenticate(request: Request, env: Env, mcp = false) {
   const token = bearer(request);
-  if (!token || token.length > 8192) throw new HttpError(401, 'Participant credential required');
+  if (!token || token.length > 8192) {
+    throw new HttpError(401, 'Participant credential required', request.headers.has('authorization') ? 'invalid_bearer_format' : undefined);
+  }
   if (/^ocp_[a-f0-9]{64}$/.test(token)) {
     const participant = await env.DB.prepare(
       'SELECT participant_id FROM credentials WHERE digest=? AND expires_at>?'
@@ -78,8 +80,8 @@ export async function authenticate(request: Request, env: Env, mcp = false) {
   let claims;
   try {
     claims = await verifyAccessToken(token, createRemoteJWKSet(config.jwks, { timeoutDuration: 3000 }), config.issuer, config.resource);
-  } catch {
-    throw new HttpError(401, 'Invalid or expired access token');
+  } catch (error) {
+    throw new HttpError(401, 'Invalid or expired access token', tokenFailureCategory(error));
   }
   if (!claims.inScope) throw new HttpError(403, 'Missing ocp:access scope');
 
