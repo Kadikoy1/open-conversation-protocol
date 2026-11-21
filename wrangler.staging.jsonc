@@ -26,6 +26,8 @@
     }
   ],
   "vars": {
-    "OCP_PUBLIC_ORIGIN": "https://staging.openconversationprotocol.org"
+    "OCP_PUBLIC_ORIGIN": "https://staging.openconversationprotocol.org",
+    "OAUTH_ISSUER": "https://dev-c5r8hkva3vnw4dm6.us.auth0.com/",
+    "OAUTH_JWKS_URL": "https://dev-c5r8hkva3vnw4dm6.us.auth0.com/.well-known/jwks.json"
   }
 }
