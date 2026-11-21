@@ -1,0 +1,31 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Staging only. Deploying this file attaches the Custom Domain after approval.
+  "name": "ocp-staging",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "staging.openconversationprotocol.org", "custom_domain": true }],
+  "assets": { "directory": "./public", "run_worker_first": ["/api/*", "/mcp", "/.well-known/*"] },
+  "observability": {
+    "enabled": true,
+    "logs": { "invocation_logs": false },
+    "traces": { "enabled": true, "head_sampling_rate": 0.01 }
+  },
+  "ratelimits": [
+    { "name": "REQUEST_LIMIT", "namespace_id": "1101", "simple": { "limit": 240, "period": 60 } },
+    { "name": "PARTICIPANT_LIMIT", "namespace_id": "1102", "simple": { "limit": 120, "period": 60 } }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ocp-staging-db",
+      "database_id": "ee8696bf-7a1f-408e-8db6-73449a87bdff",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "OCP_PUBLIC_ORIGIN": "https://staging.openconversationprotocol.org"
+  }
+}
