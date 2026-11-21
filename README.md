@@ -80,6 +80,8 @@ The webhook authenticates the provider delivery and uses the mapped bridge as th
 
 ## Private HTTPS deployment
 
+For the first ChatGPT and Claude demonstration, follow the [staging runbook](docs/staging.md) and use the dedicated staging configuration.
+
 Proceed only with approval for the account, hostname, database, and OAuth issuer. The hosted MCP clients must be able to reach HTTPS discovery and `/mcp` from their infrastructure. OCP data is private through enrollment, credentials, and membership. The network endpoint is reachable by the connector hosts. A VPN-only endpoint or blanket Cloudflare Access login in front of MCP will block hosted clients.
 
 1. Run the checks above. Select an active Cloudflare zone and an unused dedicated subdomain such as `ocp.example.com`. Choose a D1 database dedicated to this environment. Use a least-privilege Cloudflare operator credential for the approved Worker, D1 database, and zone.

@@ -218,6 +218,55 @@ test('ownership, role changes and message writes remain consistent under concurr
   expect((await owner.call(path + '/messages', 'POST', { body: 'Owner still writes' })).status()).toBe(201);
 });
 
+test('distinct MCP participants share persistent history with an approved observer', async ({ request, baseURL }) => {
+  const first = await participant(request, 'llm');
+  const second = await participant(request, 'llm');
+  const observer = await participant(request);
+  const outsider = await participant(request);
+  const clients = [];
+  async function connect(token) {
+    const client = new Client({ name: 'ocp-demo-test', version: '1.0.0' });
+    clients.push(client);
+    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', baseURL), {
+      requestInit: { headers: auth(token) },
+    }));
+    return client;
+  }
+  async function invoke(client, name, args) {
+    const result = await client.callTool({ name, arguments: args });
+    expect(result.isError).toBeFalsy();
+    return JSON.parse(result.content[0].text);
+  }
+  try {
+    const author = await connect(first.token);
+    const guest = await connect(second.token);
+    const { id } = await invoke(author, 'create_conversation', { title: 'OCP staging rehearsal' });
+    const path = conversations + '/' + id;
+    const { seq } = await invoke(author, 'post_message', { conversation_id: id, body: 'Synthetic A' });
+    expect((await guest.callTool({ name: 'read_messages', arguments: { conversation_id: id } })).isError).toBe(true);
+    expect((await first.call(path + '/members/' + second.id, 'PUT', { role: 'writer' })).status()).toBe(204);
+    expect((await first.call(path + '/members/' + observer.id, 'PUT', { role: 'reader' })).status()).toBe(204);
+    expect((await invoke(guest, 'list_conversations', {})).conversations[0].id).toBe(id);
+    expect((await invoke(guest, 'read_messages', { conversation_id: id })).messages[0])
+      .toMatchObject({ seq, participant_id: first.id, body: 'Synthetic A' });
+    await invoke(guest, 'post_message', { conversation_id: id, body: 'Synthetic B' });
+    await author.close();
+    await guest.close();
+
+    const returningAuthor = await connect(first.token);
+    const history = await invoke(returningAuthor, 'read_messages', { conversation_id: id });
+    expect(history.messages.map(message => [message.participant_id, message.body])).toEqual([
+      [first.id, 'Synthetic A'], [second.id, 'Synthetic B'],
+    ]);
+    expect(history.messages[1].seq).toBeGreaterThan(seq);
+    expect(await (await observer.call(path + '/messages')).json()).toEqual(history);
+    expect((await observer.call(path + '/messages', 'POST', { body: 'Denied' })).status()).toBe(403);
+    expect((await outsider.call(path + '/messages')).status()).toBe(404);
+  } finally {
+    await Promise.all(clients.map(client => client.close()));
+  }
+});
+
 test('sustained requests from a participant receive 429 with retry information', async ({ request }) => {
   const member = await participant(request);
   let limited;
