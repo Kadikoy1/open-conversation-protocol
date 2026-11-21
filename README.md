@@ -70,6 +70,23 @@ Use `https://<hostname>/mcp` with Streamable HTTP. The tools are `list_conversat
 
 OCP verifies access tokens against HTTPS JWKS and checks the signed client ID against the enrollment. This restricts which client can obtain an accepted grant. As with other bearer credentials, anyone holding a valid token can present it until expiry or revocation. Keep tokens out of logs, and remove the OCP enrollment promptly if access is lost. Live connector validation requires an approved endpoint and issuer. [MCP authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization), [ChatGPT OAuth setup](https://developers.openai.com/plugins/build/auth), [Claude connector setup](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp), [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068.html)
 
+### Test the staging Auth0 Native app in PowerShell
+
+In the existing Auth0 Native application, enable Authorization Code, use token endpoint authentication method `None`, and add `http://127.0.0.1:8765/callback` to **Allowed Callback URLs**. The test user needs `ocp:access` through RBAC and the client needs user-delegated access to that scope. Copy the application's public Client ID.
+
+Run from the repository root with Node.js 24. Replace the placeholder with that public Client ID.
+
+```powershell
+npm ci
+$clientId = '<PUBLIC_CLIENT_ID>'
+node ./scripts/ocp-auth0-pkce.mjs $clientId resource
+node ./scripts/ocp-auth0-pkce.mjs $clientId audience
+```
+
+Run each mode separately. Open the Auth0 authorization URL shown in the terminal in a browser on the same computer and sign in as the test user. The listener binds to IPv4 loopback and waits up to five minutes. The browser redirects back with an authorization code for an S256 PKCE exchange.
+
+The runner sends `resource` on both requests in resource mode and sends `audience` only on the authorization request in audience mode. If only audience mode passes, check Auth0's Resource Parameter Compatibility Profile. If both pass, check the tenant's default audience before concluding which parameter selected OCP. Successful output includes only verified claims and the result. The access token and authorization code are neither logged nor saved. The runner validates the token locally using the OCP verifier and the issuer's public keys. It makes no authenticated request to OCP.
+
 ## Optional AgentMail bridge
 
 1. Create a participant of kind `bridge` and grant it `writer` membership in the conversation.
