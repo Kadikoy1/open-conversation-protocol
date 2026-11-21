@@ -71,3 +71,28 @@ test('OAuth discovery disables incomplete or unsafe URL configurations', () => {
     { OAUTH_JWKS_URL: 'https://user@issuer.example/jwks' }, { OAUTH_JWKS_URL: undefined },
   ]) assert.equal(oauth({ ...config, ...delta }), null);
 });
+
+test('Auth0 RFC 9068 RS256 access token meets the staging contract', async () => {
+  const issuer = 'https://dev-c5r8hkva3vnw4dm6.us.auth0.com/';
+  const resource = 'https://staging.openconversationprotocol.org/mcp';
+  const { publicKey, privateKey } = await generateKeyPair('RS256');
+  const key = createLocalJWKSet({ keys: [{ ...await exportJWK(publicKey), kid: 'auth0-fixture' }] });
+  const clientId = 'test-auth0-client';
+  const subject = 'auth0|test-user';
+  const signFixture = ({ claims = { client_id: clientId, scope: 'ocp:access' },
+    type = 'at+jwt', aud = resource, iss = issuer } = {}) => new SignJWT(claims)
+    .setProtectedHeader({ alg: 'RS256', typ: type, kid: 'auth0-fixture' })
+    .setIssuer(iss)
+    .setAudience(aud)
+    .setSubject(subject)
+    .setJti(crypto.randomUUID())
+    .setIssuedAt()
+    .setExpirationTime('10m')
+    .sign(privateKey);
+  const verify = async overrides => verifyAccessToken(await signFixture(overrides), key, issuer, resource);
+  assert.deepEqual(await verify(), { clientId, subject, inScope: true });
+  await assert.rejects(verify({ type: 'JWT', claims: { azp: clientId, scope: 'ocp:access' } }));
+  await assert.rejects(verify({ iss: issuer.slice(0, -1) }));
+  await assert.rejects(verify({ aud: [resource, issuer + 'userinfo'] }));
+  assert.equal((await verify({ claims: { client_id: clientId, permissions: ['ocp:access'] } })).inScope, false);
+});
