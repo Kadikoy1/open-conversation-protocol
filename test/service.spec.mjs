@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { Webhook } from 'standardwebhooks';
+import { listStagingConversations } from '../scripts/ocp-auth0-pkce.mjs';
 
 const admin = 'e'.repeat(64);
 const auth = token => ({ Authorization: 'Bearer ' + token });
@@ -265,6 +266,44 @@ test('distinct MCP participants share persistent history with an approved observ
   } finally {
     await Promise.all(clients.map(client => client.close()));
   }
+});
+
+test('atomic OAuth enrolment is safe to retry, including concurrent requests', async ({ request }) => {
+  const endpoint = '/api/admin/participants/oauth';
+  const payload = {
+    display_name: 'OCP Auth0 Test Participant', kind: 'app',
+    issuer: 'https://issuer.example.com', client_id: 'native-test', subject: 'auth0|concurrent',
+  };
+  const enrol = body => requestFor(request, admin)(endpoint, 'POST', body);
+  expect((await requestFor(request, 'f'.repeat(64))(endpoint, 'POST', payload)).status()).toBe(401);
+  expect((await enrol({ ...payload, issuer: 'https://wrong.example' })).status()).toBe(409);
+
+  const responses = await Promise.all(Array.from({ length: 5 }, () => enrol(payload)));
+  expect(responses.map(response => response.status()).sort()).toEqual([200, 200, 200, 200, 201]);
+  const results = await Promise.all(responses.map(response => response.json()));
+  expect(new Set(results.map(result => result.id)).size).toBe(1);
+  expect(results.filter(result => result.status === 'created')).toHaveLength(1);
+  expect((await enrol({ ...payload, display_name: 'Different owner' })).status()).toBe(409);
+  const retry = await enrol(payload);
+  expect(retry.status()).toBe(200);
+  expect(await retry.json()).toEqual({ id: results[0].id, status: 'already_enrolled' });
+});
+
+test('read-only staging runner verifies anonymous denial and lists with a local credential', async ({ request, baseURL }) => {
+  const member = await participant(request, 'app');
+  const forwarded = [];
+  const fetcher = (input, init) => {
+    expect(String(input)).toBe('https://staging.openconversationprotocol.org/mcp');
+    expect(init.redirect).toBe('error');
+    forwarded.push(new Headers(init.headers).has('Authorization'));
+    return fetch(new URL('/mcp', baseURL), init);
+  };
+  expect(await listStagingConversations(member.token, fetcher)).toEqual({
+    unauthenticated: 'rejected', conversationCount: 0, hasMore: false,
+  });
+  expect(forwarded[0]).toBe(false);
+  expect(forwarded).toContain(true);
+  await expect(listStagingConversations('invalid-fixture-token', fetcher)).rejects.toThrow();
 });
 
 test('sustained requests from a participant receive 429 with retry information', async ({ request }) => {

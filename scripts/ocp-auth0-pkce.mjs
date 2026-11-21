@@ -2,6 +2,8 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { createRemoteJWKSet, decodeJwt, decodeProtectedHeader } from 'jose';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { accessScope, verifyAccessToken } from '../src/oauth-token.ts';
 
 const issuer = 'https://dev-c5r8hkva3vnw4dm6.us.auth0.com/';
@@ -99,9 +101,50 @@ export async function validateStagingToken(token, key, clientId) {
   };
 }
 
+export async function listStagingConversations(token, fetcher = fetch) {
+  const pinnedFetch = (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    if (url.href !== resource) throw new Error('Unexpected MCP destination.');
+    return fetcher(input, { ...init, redirect: 'error' });
+  };
+
+  const challenge = await pinnedFetch(resource, { signal: AbortSignal.timeout(10_000) });
+  if (challenge.status !== 401 || !/^Bearer\b/i.test(challenge.headers.get('WWW-Authenticate') ?? '')) {
+    throw new Error('Expected the OCP bearer challenge for anonymous GET /mcp.');
+  }
+  await challenge.body?.cancel();
+
+  async function call(bearer) {
+    const client = new Client({ name: 'ocp-staging-pkce', version: '0.1.0' });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(resource), {
+        fetch: pinnedFetch,
+        requestInit: bearer ? { headers: { Authorization: 'Bearer ' + bearer } } : undefined,
+      }));
+      return await client.callTool({ name: 'list_conversations', arguments: {} });
+    } finally {
+      await client.close();
+    }
+  }
+
+  const rejected = await call();
+  const authChallenge = rejected._meta?.['mcp/www_authenticate'];
+  if (rejected.isError !== true || !Array.isArray(authChallenge) ||
+      !authChallenge.some(value => typeof value === 'string' && /^Bearer\b/i.test(value))) {
+    throw new Error('Expected an OAuth challenge for anonymous list_conversations.');
+  }
+  const result = await call(token);
+  if (result.isError) throw new Error('Authenticated list_conversations was rejected.');
+  const content = result.content?.find(item => item.type === 'text');
+  const data = content ? JSON.parse(content.text) : null;
+  if (!Array.isArray(data?.conversations)) throw new Error('Unexpected list_conversations result.');
+  return { unauthenticated: 'rejected', conversationCount: data.conversations.length, hasMore: !!data.next };
+}
+
 async function main([clientId, mode = 'resource', ...extra]) {
-  if (!clientId || !/^[A-Za-z0-9_-]{1,512}$/.test(clientId) || !['resource', 'audience'].includes(mode) || extra.length) {
-    throw new Error('Usage: node scripts/ocp-auth0-pkce.mjs <Native application Client ID> [resource|audience]');
+  const list = extra.length === 1 && extra[0] === '--list-conversations';
+  if (!clientId || !/^[A-Za-z0-9_-]{1,512}$/.test(clientId) || !['resource', 'audience'].includes(mode) || (extra.length > 0 && !list)) {
+    throw new Error('Usage: node scripts/ocp-auth0-pkce.mjs <Native application Client ID> [resource|audience] [--list-conversations]');
   }
 
   const state = randomBytes(32).toString('base64url');
@@ -129,7 +172,15 @@ async function main([clientId, mode = 'resource', ...extra]) {
 
   const key = createRemoteJWKSet(new URL('.well-known/jwks.json', issuer), { timeoutDuration: 3000 });
   const claims = await validateStagingToken(data.access_token, key, clientId);
-  console.log(JSON.stringify({ result: 'PASS', mode, ...claims }, null, 2));
+  let mcp;
+  if (list) {
+    try {
+      mcp = await listStagingConversations(data.access_token);
+    } catch {
+      throw new Error('MCP check failed. Check staging discovery, participant enrolment and access policies.');
+    }
+  }
+  console.log(JSON.stringify({ result: 'PASS', mode, ...claims, mcp }, null, 2));
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {

@@ -61,6 +61,44 @@ app.post('/api/admin/participants', async c => {
     .bind(participant, data.display_name, data.kind).run();
   return c.json({ id: participant }, 201);
 });
+// Create both records in one transaction, or recover the participant from the existing enrollment.
+app.post('/api/admin/participants/oauth', async c => {
+  const config = oauth(c.env);
+  if (!config) throw new HttpError(503, 'OAuth is disabled');
+  const data = await json(c.req.raw, z.object({
+    display_name: title,
+    kind: z.enum(['human', 'llm', 'agent', 'app']),
+    issuer: z.string().url().max(2048),
+    client_id: clientId,
+    subject: external,
+  }).strict());
+  if (data.issuer !== config.issuer) throw new HttpError(409, 'OAuth issuer does not match this environment');
+
+  const participant = crypto.randomUUID();
+  const identity = [config.issuer, data.client_id, data.subject] as const;
+  const [, , enrollment] = await c.env.DB.batch<{ id: string; display_name: string; kind: string }>([
+    c.env.DB.prepare(`
+      INSERT INTO participants(id,display_name,kind)
+      SELECT ?,?,? WHERE NOT EXISTS (
+        SELECT 1 FROM oauth_enrollments WHERE issuer=? AND client_id=? AND subject=?
+      )
+    `).bind(participant, data.display_name, data.kind, ...identity),
+    c.env.DB.prepare(`
+      INSERT INTO oauth_enrollments(issuer,client_id,subject,participant_id)
+      SELECT ?,?,?,id FROM participants WHERE id=?
+    `).bind(...identity, participant),
+    c.env.DB.prepare(`
+      SELECT p.id,p.display_name,p.kind FROM oauth_enrollments e
+      JOIN participants p ON p.id=e.participant_id WHERE e.issuer=? AND e.client_id=? AND e.subject=?
+    `).bind(...identity),
+  ]);
+  const enrolled = enrollment.results[0];
+  if (!enrolled || enrolled.display_name !== data.display_name || enrolled.kind !== data.kind) {
+    throw new HttpError(409, 'OAuth identity is already enrolled for another participant');
+  }
+  const created = enrolled.id === participant;
+  return c.json({ id: enrolled.id, status: created ? 'created' : 'already_enrolled' }, created ? 201 : 200);
+});
 app.post('/api/admin/participants/:participant/credentials', async c => {
   const participant = id.parse(c.req.param('participant'));
   const { hours } = await json(c.req.raw, z.object({ hours: expiry }).strict());

@@ -159,6 +159,46 @@ enroll "$CHATGPT_ID" "$CHATGPT_SUB" "$CHATGPT_CLIENT_ID"
 enroll "$CLAUDE_ID" "$CLAUDE_SUB" "$CLAUDE_CLIENT_ID"
 ```
 
+## First read-only authenticated MCP smoke test
+
+Run these steps manually after the reviewed Worker is approved and deployed. The utility requires the new atomic admin route, `POST /api/admin/participants/oauth`. The existing two-step admin API remains available for other workflows. The new route uses the existing OAuth enrollment table and requires no migration.
+
+The route accepts `display_name`, `kind`, `issuer`, `client_id` and `subject`. It checks the issuer against the Worker configuration. A retry for the same issuer, client and subject returns the original participant ID if its name and kind match. A conflicting assignment returns 409. It never transfers an identity to a different participant.
+
+### Enrol from Windows PowerShell 5.1
+
+Run from the repository root with Node.js 24 and `npm ci`. The enrollment command reads the existing ignored `.env.staging` file for `OCP_ADMIN_TOKEN`. Use the already authorized Access service credentials for the admin application, which need a matching Service Auth policy. The following example prompts for the Client Secret without echoing it and clears both variables after the request.
+
+```powershell
+$clientId = Read-Host 'Verified Auth0 public Client ID'
+$subject = Read-Host 'Verified Auth0 subject'
+$env:CF_ACCESS_CLIENT_ID = Read-Host 'Cloudflare Access service Client ID'
+$accessSecret = Read-Host 'Cloudflare Access service Client Secret' -AsSecureString
+try {
+    $env:CF_ACCESS_CLIENT_SECRET = [PSCredential]::new('access', $accessSecret).GetNetworkCredential().Password
+    node ./scripts/ocp-enrol-staging.mjs $clientId $subject
+} finally {
+    Remove-Item Env:CF_ACCESS_CLIENT_SECRET, Env:CF_ACCESS_CLIENT_ID -ErrorAction SilentlyContinue
+    Remove-Variable accessSecret
+}
+```
+
+If your existing Access policy uses an interactive session, use the application-scoped `CF_Authorization` JWT for the staging admin path instead. Load it securely into `OCP_CF_ACCESS_JWT`, leave both service credential variables unset, run the same Node command, and clear the JWT variable afterward. A browser session with additional device or cookie-binding requirements may need the service-credential method. The utility sends credentials only to the pinned staging admin URL and refuses redirects. [Access service tokens](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/), [Access application cookies](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/)
+
+Expect `{"participantId":"<uuid>","status":"created"}` on first use. Run again with the same identity to confirm `already_enrolled` and the same ID. A redirect or 401/403 means the Access session, policy or administrator bearer needs checking. For 409, inspect the existing assignment with the operator and keep it intact until the conflict is understood.
+
+### Obtain a fresh token and list conversations
+
+Use the existing Auth0 Native app and the same test user. Its allowed callback must include `http://127.0.0.1:8765/callback`, the grant must use Authorization Code, and token endpoint authentication must be `None`. Resource mode is the verified staging path.
+
+```powershell
+node ./scripts/ocp-auth0-pkce.mjs $clientId resource --list-conversations
+```
+
+Open the displayed Auth0 URL in a local browser. The runner validates the fresh token locally first. It then checks that anonymous GET receives an OCP bearer challenge and that anonymous MCP tool execution is denied. Finally, it sends the token directly to staging over HTTPS and uses the MCP SDK to initialize and call `list_conversations`. The report includes verified claims, `mcp.unauthenticated: rejected`, and `mcp.conversationCount: 0` for a new participant. The output excludes conversation contents, credentials and authorization codes. Omitting `--list-conversations` retains local token validation only.
+
+If the unauthenticated MCP probe redirects to Cloudflare Access, review the path scope of the Access application. The admin API should be protected while `/mcp` should return OCP’s OAuth challenge. An authenticated rejection can also indicate an issuer, client or subject that differs from the enrolled tuple. The runner never sends Cloudflare Access credentials to MCP or invokes a write tool.
+
 ## First interoperability experiment
 
 Record the approved commit and hostname, when each tool ran, the returned conversation and participant IDs, sequence numbers, and expected versus actual results. Keep evidence to synthetic content and response status. Never record bearer tokens, OAuth authorization codes or client secrets.
