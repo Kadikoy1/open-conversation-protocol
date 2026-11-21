@@ -54,7 +54,13 @@ async function read() {
     author.textContent = message.display_name + ' · ' + message.created_at;
     const text = document.createElement('p');
     text.textContent = message.body;
-    item.append(author, text);
+    item.append(author);
+    if (message.email_sender_claims) {
+      const sender = document.createElement('p');
+      sender.textContent = 'Email From claim (unverified): ' + message.email_sender_claims.from;
+      item.append(sender);
+    }
+    item.append(text);
     el('messages').append(item);
   }
   after = page.next;

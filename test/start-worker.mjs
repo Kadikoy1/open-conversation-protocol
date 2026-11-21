@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 const state = mkdtempSync(join(tmpdir(), 'ocp-test-'));
 const shared = ['--persist-to', state];
-const admin = 'test-admin-token-for-local-fixtures-only';
+const admin = 'e'.repeat(64);
 const webhook = 'whsec_' + Buffer.alloc(32, 7).toString('base64');
 const run = args => spawn(process.execPath, ['node_modules/wrangler/bin/wrangler.js', ...args], { stdio: 'inherit' });
 let child;
@@ -21,7 +21,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
 try {
   child = run(['d1', 'migrations', 'apply', 'DB', '--local', ...shared]);
   await wait(child);
-  child = run(['dev', '--local', '--ip', '127.0.0.1', '--port', '8793', ...shared,
+  child = run(['dev', '--local', '--ip', '127.0.0.1', '--port', '8797', ...shared,
     '--var', 'OCP_ADMIN_TOKEN:' + admin, '--var', 'AGENTMAIL_WEBHOOK_SECRET:' + webhook,
     '--var', 'OCP_PUBLIC_ORIGIN:https://ocp.example.com', '--var', 'OAUTH_ISSUER:https://issuer.example.com',
     '--var', 'OAUTH_JWKS_URL:https://issuer.example.com/jwks']);

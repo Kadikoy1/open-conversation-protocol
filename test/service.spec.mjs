@@ -3,7 +3,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { Webhook } from 'standardwebhooks';
 
-const admin = 'test-admin-token-for-local-fixtures-only';
+const admin = 'e'.repeat(64);
 const auth = token => ({ Authorization: 'Bearer ' + token });
 const requestFor = (request, token) => (path, method = 'GET', data) =>
   request.fetch(path, { method, data, headers: auth(token) });
@@ -64,6 +64,23 @@ test('MCP discovery, origin checks and real SDK tool round trip', async ({ reque
   expect(await (await request.get('/.well-known/oauth-protected-resource/mcp')).json()).toMatchObject({
     resource: 'https://ocp.example.com/mcp', authorization_servers: ['https://issuer.example.com'],
   });
+  const anonymous = new Client({ name: 'discovery', version: '1.0.0' });
+  try {
+    await anonymous.connect(new StreamableHTTPClientTransport(new URL('/mcp', baseURL)));
+    expect((await anonymous.listTools()).tools.every(tool =>
+      tool._meta.securitySchemes[0].scopes.includes('ocp:access'))).toBe(true);
+    for (const [name, args] of [
+      ['list_conversations', {}],
+      ['create_conversation', { title: 'Must not be written' }],
+    ]) {
+      const result = await anonymous.callTool({ name, arguments: args });
+      expect(result.isError).toBe(true);
+      expect(result._meta['mcp/www_authenticate'][0]).toContain('resource_metadata=');
+    }
+    expect((await (await owner.call(conversations)).json()).conversations).toEqual([]);
+  } finally {
+    await anonymous.close();
+  }
   expect((await request.get('/mcp', { headers: { ...auth(owner.token), Origin: 'https://elsewhere.example' } })).status()).toBe(403);
   const client = new Client({ name: 'ocp-test', version: '1.0.0' });
   const transport = new StreamableHTTPClientTransport(new URL('/mcp', baseURL), { requestInit: { headers: auth(owner.token) } });
@@ -91,7 +108,7 @@ test('signed mail is linked, deduplicated and never reflected', async ({ request
   const { path } = await room(owner);
   const member = path + '/members/' + bridge.id;
   const message = { inbox_id: 'inbox@example.test', thread_id: 'thread-1', message_id: 'message-1',
-    from: 'Sender <sender@example.test>', text: 'Synthetic mail' };
+    from: 'Sender <sender@example.test>', reply_to: ['reply@example.test'], text: 'Synthetic mail' };
   expect((await owner.call(member, 'PUT', { role: 'writer' })).status()).toBe(204);
   expect((await owner.call(path + '/agentmail', 'POST', { inbox_id: message.inbox_id,
     thread_id: message.thread_id, participant_id: bridge.id })).status()).toBe(204);
@@ -117,7 +134,10 @@ test('signed mail is linked, deduplicated and never reflected', async ({ request
   expect((await deliver({ message_id: '6' })).status()).toBe(204);
   const { messages } = await (await owner.call(path + '/messages')).json();
   expect(messages).toHaveLength(1);
-  expect(messages[0]).toMatchObject({ body: 'Synthetic mail', source: 'agentmail', participant_id: bridge.id });
+  expect(messages[0]).toMatchObject({
+    body: 'Synthetic mail', source: 'agentmail', participant_id: bridge.id, display_name: 'Test bridge',
+    email_sender_claims: { from: message.from, reply_to: message.reply_to, verified: false },
+  });
 });
 
 test('human can connect, post literal HTML and reconnect to persisted history', async ({ page, request }) => {
@@ -136,4 +156,78 @@ test('human can connect, post literal HTML and reconnect to persisted history', 
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
   await page.getByLabel('Conversation', { exact: true }).selectOption({ label: 'Browser room' });
   await expect(page.getByText('<img src=x onerror=alert(1)>')).toBeVisible();
+});
+
+test('administration requires the exact configured secret and enrolls each client separately', async ({ request }) => {
+  const path = '/api/admin/participants';
+  for (const header of [undefined, 'Basic ' + admin, 'Bearer ' + 'f'.repeat(64)]) {
+    const response = await request.post(path, {
+      data: { display_name: 'Denied', kind: 'human' }, headers: header ? { Authorization: header } : {},
+    });
+    expect(response.status()).toBe(401);
+  }
+  const member = await participant(request);
+  const another = await participant(request);
+  expect((await member.call(path, 'POST', { display_name: 'Denied', kind: 'human' })).status()).toBe(401);
+  const enroll = (who, data) => requestFor(request, admin)(path + '/' + who.id + '/oauth', 'PUT', data);
+  expect((await enroll(member, { subject: 'same-user' })).status()).toBe(400);
+  const first = { subject: 'same-user', client_id: 'chat-client' };
+  expect((await enroll(member, first)).status()).toBe(204);
+  expect((await enroll(another, first)).status()).toBe(409);
+  expect((await enroll(another, { ...first, client_id: 'different-client' })).status()).toBe(204);
+  expect((await requestFor(request, admin)(path + '/' + member.id + '/oauth', 'DELETE')).status()).toBe(204);
+  expect((await enroll(another, first)).status()).toBe(204);
+});
+
+test('ownership, role changes and message writes remain consistent under concurrency', async ({ request }) => {
+  const owner = await participant(request);
+  const writer = await participant(request);
+  const rooms = await Promise.all(Array.from({ length: 4 }, () => room(owner, 'Equal title')));
+  expect(new Set(rooms.map(room => room.id)).size).toBe(4);
+  const { conversations: owned } = await (await owner.call(conversations)).json();
+  expect(owned.map(room => room.role)).toEqual(['owner', 'owner', 'owner', 'owner']);
+
+  const { path } = rooms[0];
+  const ownerMember = path + '/members/' + owner.id;
+  const member = path + '/members/' + writer.id;
+  const attempts = await Promise.all([
+    owner.call(ownerMember, 'PUT', { role: 'reader' }),
+    owner.call(ownerMember, 'DELETE'),
+    ...Array.from({ length: 4 }, () => owner.call(member, 'PUT', { role: 'writer' })),
+  ]);
+  expect(attempts.map(response => response.status())).toEqual([403, 403, 204, 204, 204, 204]);
+
+  const post = index => writer.call(path + '/messages', 'POST', { body: 'Concurrent ' + index });
+  const before = await Promise.all(Array.from({ length: 5 }, (_, index) => post(index + 100)));
+  expect(before.every(response => response.status() === 201)).toBe(true);
+  const [demote, ...posts] = await Promise.all([
+    owner.call(member, 'PUT', { role: 'reader' }),
+    ...Array.from({ length: 12 }, (_, index) => post(index)),
+  ]);
+  expect(demote.status()).toBe(204);
+  const accepted = await Promise.all(before.map(response => response.json()));
+  for (const response of posts) {
+    expect([201, 403]).toContain(response.status());
+    if (response.status() === 201) accepted.push(await response.json());
+  }
+  expect((await post(12)).status()).toBe(403);
+  const { messages } = await (await owner.call(path + '/messages')).json();
+  expect(messages.map(message => message.seq)).toEqual(accepted.map(message => message.seq).sort((a, b) => a - b));
+  expect(new Set(messages.map(message => message.id)).size).toBe(accepted.length);
+  expect(messages.every(message => message.participant_id === writer.id)).toBe(true);
+  expect((await owner.call(path + '/messages', 'POST', { body: 'Owner still writes' })).status()).toBe(201);
+});
+
+test('sustained requests from a participant receive 429 with retry information', async ({ request }) => {
+  const member = await participant(request);
+  let limited;
+  for (let count = 0; count < 135; count++) {
+    const response = await member.call(conversations);
+    if (response.status() === 429) {
+      limited = response;
+      break;
+    }
+    expect(response.status()).toBe(200);
+  }
+  expect(limited?.headers()['retry-after']).toBe('60');
 });

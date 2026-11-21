@@ -5,10 +5,13 @@ import { ingest } from './agentmail';
 import { body, external, HttpError, id, json, seq, title } from './http';
 import { mcp } from './mcp';
 import { Store } from './store';
+import { accessScope, clientIdLimit } from './oauth-token';
 
-const app = new Hono<{ Bindings: Env; Variables: { participant: string } }>();
+type AppEnv = { Bindings: Env; Variables: { participant: string } };
+const app = new Hono<AppEnv>();
 const expiry = z.number().int().min(1).max(720).default(168);
 const role = z.enum(['reader', 'writer']);
+const clientId = z.string().min(1).max(clientIdLimit).regex(/^\S+$/);
 const kind = z.enum(['human', 'llm', 'agent', 'app', 'bridge']);
 
 app.use('*', async (c, next) => {
@@ -16,6 +19,21 @@ app.use('*', async (c, next) => {
   c.header('Cache-Control', 'no-store');
   c.header('X-Content-Type-Options', 'nosniff');
   c.header('Referrer-Policy', 'no-referrer');
+});
+
+async function throttle(c: Context<AppEnv>, binding: RateLimit, key: string) {
+  if ((await binding.limit({ key })).success) return null;
+  return c.json({ error: 'Too many requests' }, 429, { 'Retry-After': '60' });
+}
+
+app.use('*', async (c, next) => {
+  const path = c.req.path;
+  if (path === '/mcp' || path.startsWith('/api/') || path.startsWith('/.well-known/')) {
+    const group = path.startsWith('/api/admin/') ? 'admin' : path === '/api/bridge/agentmail' ? 'bridge' : 'participants';
+    const limited = await throttle(c, c.env.REQUEST_LIMIT, group + ':' + (c.req.header('CF-Connecting-IP') ?? 'local'));
+    if (limited) return limited;
+  }
+  await next();
 });
 
 app.onError((error, c) => {
@@ -59,27 +77,26 @@ app.put('/api/admin/participants/:participant/oauth', async c => {
   const config = oauth(c.env);
   if (!config) throw new HttpError(503, 'OAuth is disabled');
   const participant = id.parse(c.req.param('participant'));
-  const { subject } = await json(c.req.raw, z.object({ subject: external }).strict());
+  const { subject, client_id } = await json(c.req.raw, z.object({ subject: external, client_id: clientId }).strict());
   const result = await c.env.DB.prepare(`
-    INSERT INTO oauth_identities(issuer,subject,participant_id)
-    SELECT ?,?,id FROM participants WHERE id=? AND kind<>'bridge'
-    ON CONFLICT(issuer,subject) DO NOTHING
-  `).bind(config.issuer, subject, participant).run();
+    INSERT INTO oauth_enrollments(issuer,client_id,subject,participant_id)
+    SELECT ?,?,?,id FROM participants WHERE id=? AND kind<>'bridge'
+    ON CONFLICT(issuer,client_id,subject) DO NOTHING
+  `).bind(config.issuer, client_id, subject, participant).run();
   if (!result.meta.changes) throw new HttpError(409, 'Participant unavailable or identity already enrolled');
   return c.body(null, 204);
 });
 app.delete('/api/admin/participants/:participant/oauth', async c => {
-  await c.env.DB.prepare('DELETE FROM oauth_identities WHERE participant_id=?')
+  await c.env.DB.prepare('DELETE FROM oauth_enrollments WHERE participant_id=?')
     .bind(id.parse(c.req.param('participant'))).run();
   return c.body(null, 204);
 });
 
-app.use('/api/conversations', async (c, next) => {
-  c.set('participant', await authenticate(c.req.raw, c.env));
-  await next();
-});
 app.use('/api/conversations/*', async (c, next) => {
-  if (!c.get('participant')) c.set('participant', await authenticate(c.req.raw, c.env));
+  const participant = await authenticate(c.req.raw, c.env);
+  const limited = await throttle(c, c.env.PARTICIPANT_LIMIT, participant);
+  if (limited) return limited;
+  c.set('participant', participant);
   await next();
 });
 app.get('/api/conversations', async c => {
@@ -127,11 +144,11 @@ app.post('/api/conversations/:id/agentmail', async c => {
   return c.body(null, 204);
 });
 
-function resourceMetadata(c: Context<{ Bindings: Env }>) {
+function resourceMetadata(c: Context<AppEnv>) {
   const config = oauth(c.env);
   if (!config) return c.notFound();
   return c.json({ resource: config.resource, authorization_servers: [config.issuer],
-    scopes_supported: ['ocp:access'], bearer_methods_supported: ['header'] });
+    scopes_supported: [accessScope], bearer_methods_supported: ['header'] });
 }
 app.get('/.well-known/oauth-protected-resource/mcp', resourceMetadata);
 app.get('/.well-known/oauth-protected-resource', resourceMetadata);
@@ -141,21 +158,27 @@ app.all('/mcp', async c => {
   if (origin && origin !== (c.env.OCP_PUBLIC_ORIGIN ?? new URL(c.req.url).origin)) {
     throw new HttpError(403, 'Origin denied');
   }
+  const challenge = config
+    ? 'Bearer realm="ocp", resource_metadata="' + config.discovery + '", scope="' + accessScope + '"'
+    : 'Bearer realm="ocp"';
+  if (config && c.req.method === 'POST' && !c.req.header('Authorization')) {
+    return mcp(c.req.raw, null, challenge);
+  }
   let participant: string;
   try {
     participant = await authenticate(c.req.raw, c.env, true);
   } catch (error) {
     if (error instanceof HttpError && (error.status === 401 || error.message === 'Missing ocp:access scope')) {
-      const attributes = ['realm="ocp"'];
-      if (config) attributes.push(`resource_metadata="${config.discovery}"`, 'scope="ocp:access"');
-      if (error.status === 403) attributes.push('error="insufficient_scope"');
-      else if (c.req.header('Authorization')) attributes.push('error="invalid_token"');
-      c.header('WWW-Authenticate', 'Bearer ' + attributes.join(', '));
+      const reason = error.status === 403 ? ', error="insufficient_scope"'
+        : c.req.header('Authorization') ? ', error="invalid_token"' : '';
+      c.header('WWW-Authenticate', challenge + reason);
     }
     throw error;
   }
   if (c.req.method !== 'POST') return c.body(null, 405, { Allow: 'POST' });
-  return mcp(c.req.raw, new Store(c.env.DB, participant), !!config);
+  const limited = await throttle(c, c.env.PARTICIPANT_LIMIT, participant);
+  if (limited) return limited;
+  return mcp(c.req.raw, new Store(c.env.DB, participant), config ? challenge : undefined);
 });
 
 export default app;

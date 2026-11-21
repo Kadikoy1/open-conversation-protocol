@@ -1,21 +1,23 @@
 import { createRemoteJWKSet } from 'jose';
-import { HttpError } from './http';
-import { verifyAccessToken } from './oauth-token';
+import { HttpError } from './http.ts';
+import { verifyAccessToken } from './oauth-token.ts';
 
-export interface Env {
-  DB: D1Database;
+export type Env = Pick<Cloudflare.Env, 'DB' | 'REQUEST_LIMIT' | 'PARTICIPANT_LIMIT'> & {
   OCP_ADMIN_TOKEN?: string;
   OCP_PUBLIC_ORIGIN?: string;
   OAUTH_ISSUER?: string;
   OAUTH_JWKS_URL?: string;
   AGENTMAIL_WEBHOOK_SECRET?: string;
+};
+
+const encoder = new TextEncoder();
+const sha256 = (value: string) => crypto.subtle.digest('SHA-256', encoder.encode(value));
+
+async function digest(value: string) {
+  return Array.from(new Uint8Array(await sha256(value)), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
-export async function digest(value: string) {
-  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
-  return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
-}
-
+const adminToken = /^[a-f0-9]{64}$/;
 function bearer(request: Request) {
   return request.headers.get('authorization')?.match(/^Bearer ([A-Za-z0-9._~+/-]+=*)$/i)?.[1];
 }
@@ -23,14 +25,11 @@ function bearer(request: Request) {
 export async function requireAdmin(request: Request, env: Env) {
   const secret = env.OCP_ADMIN_TOKEN;
   const token = bearer(request);
-  if (!secret || secret.length < 32 || !token || token.length > 512) {
+  if (!secret || !adminToken.test(secret) || !token || !adminToken.test(token)) {
     throw new HttpError(401, 'Administrator credential required');
   }
-  const [provided, expected] = await Promise.all([digest(token), digest(secret)]);
-  const bytes = new TextEncoder();
-  const key = await crypto.subtle.importKey('raw', bytes.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
-  const signature = await crypto.subtle.sign('HMAC', key, bytes.encode(expected));
-  if (!await crypto.subtle.verify('HMAC', key, signature, bytes.encode(provided))) {
+  const [provided, expected] = await Promise.all([sha256(token), sha256(secret)]);
+  if (!crypto.subtle.timingSafeEqual(provided, expected)) {
     throw new HttpError(401, 'Administrator credential required');
   }
 }
@@ -42,14 +41,18 @@ export async function issue(db: D1Database, participant: string, hours: number) 
   return { token, expires_at };
 }
 
+function httpsUrl(value: string | undefined) {
+  if (!value) return null;
+  const url = URL.parse(value);
+  return url?.protocol === 'https:' && !url.username && !url.password && !url.hash && !url.search ? url : null;
+}
+
 export function oauth(env: Env) {
-  if (!env.OCP_PUBLIC_ORIGIN || !env.OAUTH_ISSUER || !env.OAUTH_JWKS_URL) return null;
-  const origin = new URL(env.OCP_PUBLIC_ORIGIN);
-  const issuer = new URL(env.OAUTH_ISSUER);
-  const jwks = new URL(env.OAUTH_JWKS_URL);
-  if (origin.protocol !== 'https:' || origin.origin !== env.OCP_PUBLIC_ORIGIN ||
-      issuer.protocol !== 'https:' || jwks.protocol !== 'https:' ||
-      [issuer, jwks].some(url => url.username || url.password || url.hash)) return null;
+  const origin = httpsUrl(env.OCP_PUBLIC_ORIGIN);
+  const issuer = httpsUrl(env.OAUTH_ISSUER);
+  const jwks = httpsUrl(env.OAUTH_JWKS_URL);
+  if (!origin || !issuer || !jwks || origin.origin !== env.OCP_PUBLIC_ORIGIN ||
+      !env.OAUTH_ISSUER || env.OAUTH_ISSUER.trim() !== env.OAUTH_ISSUER) return null;
   return {
     issuer: env.OAUTH_ISSUER,
     jwks,
@@ -71,18 +74,18 @@ export async function authenticate(request: Request, env: Env, mcp = false) {
   const config = mcp ? oauth(env) : null;
   if (!config) throw new HttpError(401, 'Invalid credential');
 
-  let subject: string;
+  let claims;
   try {
-    const claims = await verifyAccessToken(token, createRemoteJWKSet(config.jwks), config.issuer, config.resource);
-    if (!claims.inScope) throw new HttpError(403, 'Missing ocp:access scope');
-    subject = claims.subject;
-  } catch (error) {
-    if (error instanceof HttpError) throw error;
+    claims = await verifyAccessToken(token, createRemoteJWKSet(config.jwks, { timeoutDuration: 3000 }), config.issuer, config.resource);
+  } catch {
     throw new HttpError(401, 'Invalid or expired access token');
   }
-  const participant = await env.DB.prepare(
-    'SELECT participant_id FROM oauth_identities WHERE issuer=? AND subject=?'
-  ).bind(config.issuer, subject).first<string>('participant_id');
-  if (!participant) throw new HttpError(403, 'OAuth participant is not enrolled');
+  if (!claims.inScope) throw new HttpError(403, 'Missing ocp:access scope');
+
+  const participant = await env.DB.prepare(`
+    SELECT e.participant_id FROM oauth_enrollments e JOIN participants p ON p.id=e.participant_id
+    WHERE e.issuer=? AND e.client_id=? AND e.subject=? AND p.kind<>'bridge'
+  `).bind(config.issuer, claims.clientId, claims.subject).first<string>('participant_id');
+  if (!participant) throw new HttpError(403, 'OAuth participant and client are not enrolled');
   return participant;
 }

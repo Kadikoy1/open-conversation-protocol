@@ -9,7 +9,8 @@ const received = z.object({
     inbox_id: external,
     thread_id: external,
     message_id: external,
-    from: z.string().min(1),
+    from: z.string().min(1).max(4096),
+    reply_to: z.array(z.string().max(512)).max(20).nullish(),
     labels: z.array(z.string()).default([]),
     headers: z.record(z.string(), z.string()).optional(),
     extracted_text: z.string().nullish(),
@@ -49,10 +50,10 @@ export async function ingest(request: Request, env: Env) {
   // AgentMail's message ID, scoped to its inbox, is stable across webhook registrations.
   const delivery = JSON.stringify([message.inbox_id, message.message_id]);
   await env.DB.prepare(`
-    INSERT INTO messages(id,conversation_id,participant_id,body,source,external_id)
-    SELECT ?,l.conversation_id,l.participant_id,?,'agentmail',? FROM agentmail_links l
+    INSERT INTO messages(id,conversation_id,participant_id,body,source,external_id,email_from_claim,email_reply_to_claims)
+    SELECT ?,l.conversation_id,l.participant_id,?,'agentmail',?,?,? FROM agentmail_links l
     JOIN memberships m ON m.conversation_id=l.conversation_id AND m.participant_id=l.participant_id
     WHERE l.inbox_id=? AND l.thread_id=? AND m.role='writer'
     ON CONFLICT(source,external_id) DO NOTHING
-  `).bind(crypto.randomUUID(), content, delivery, message.inbox_id, message.thread_id).run();
+  `).bind(crypto.randomUUID(), content, delivery, message.from, JSON.stringify(message.reply_to ?? []), message.inbox_id, message.thread_id).run();
 }
