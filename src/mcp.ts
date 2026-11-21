@@ -54,6 +54,6 @@ export async function mcp(request: Request, store: Store | null, challenge?: str
   const boundedRequest = new Request(request.url, {
     method: request.method, headers: request.headers, body: raw ?? await rawBody(request),
   });
-  const handler = createMcpHandler(() => makeServer(store, challenge), { responseMode: 'json' });
+  const handler = createMcpHandler(() => makeServer(store, challenge));
   return handler.fetch(boundedRequest);
 }

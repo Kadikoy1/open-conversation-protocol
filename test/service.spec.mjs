@@ -317,7 +317,7 @@ test('MCP 2026 discovery and tool listing work without a legacy handshake', asyn
       ...(token ? auth(token) : {}),
     },
     data: { jsonrpc: '2.0', id: 1, method,
-      params: { ...params, _meta: { 'io.modelcontextprotocol/protocolVersion': version } } },
+      params: { ...params, _meta: { 'io.modelcontextprotocol/protocolVersion': version, 'io.modelcontextprotocol/clientCapabilities': {} } } },
   });
 
   const rejected = await call('server/discover', {}, 'invalid-fixture-bearer');
