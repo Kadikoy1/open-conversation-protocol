@@ -33,6 +33,7 @@ export async function responseCategory(response: Response, method?: string, anon
     }
     if (typeof error === 'object' && error) {
       if (error.message?.startsWith('Bad Request: Unsupported protocol version:')) return 'unsupported_protocol';
+      if (error.message?.startsWith('Invalid _meta envelope for protocol revision')) return 'invalid_protocol_envelope';
       if (error.code === -32601) return 'rpc_method_not_supported';
     }
     if (status >= 400) return 'request_rejected';

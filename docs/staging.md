@@ -172,6 +172,12 @@ npx wrangler tail ocp-staging --config wrangler.staging.jsonc --format json |
 
 Each entry contains the HTTP method, fixed path, HTTP status, allowlisted MCP method and fixed category. Look for `origin_denied`, `accept_mismatch`, `unsupported_protocol`, `rpc_method_not_supported`, `invalid_credential`, `insufficient_scope` or `participant_not_enrolled`. A discovery GET with HTTP 200 should have category `ok`. A rate-limited or non-POST request can have a null RPC method. Remove the flag on the next approved deploy. [Wrangler real-time logs](https://developers.cloudflare.com/workers/observability/logs/real-time-logs/)
 
+### When ChatGPT sends MCP 2026 discovery
+
+The staging server supports the MCP 2026-07-28 stateless flow (`server/discover`, `tools/list`) and the legacy `initialize` flow at the same endpoint. The empty octet-stream probe seen in ChatGPT tail is not a JSON-RPC request. The following POST with `MCP-Method: server/discover` is the request to correlate.
+
+If that request carries a bearer token, OCP checks the token before dispatching discovery. An HTTP 401 is an invalid bearer or JWT at that stage. A valid JWT without the required scope or the exact issuer/client/subject enrolment receives HTTP 403. Do not copy the JWT from connector logs. Enable the staging diagnostic flag to get only the failure category. For `jwt_issuer`, compare the issuer including its trailing slash. For `jwt_audience`, check Auth0's Resource Parameter Compatibility Profile and confirm the access token has only the OCP MCP audience. For `jwt_type` or `jwt_client_id`, confirm the OCP API uses the RFC 9068 access-token profile and that the connector is sending the access token. Check the current grant and the exact signed client ID and subject if the category is `participant_not_enrolled`. A successful Native-app test does not verify the separate ChatGPT grant.
+
 ## First read-only authenticated MCP smoke test
 
 Run these steps manually after the reviewed Worker is approved and deployed. The utility requires the new atomic admin route, `POST /api/admin/participants/oauth`. The existing two-step admin API remains available for other workflows. The new route uses the existing OAuth enrollment table and requires no migration.

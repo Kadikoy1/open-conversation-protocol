@@ -19,6 +19,7 @@ test('HTTP and JSON-RPC diagnostic categories distinguish discovery failures', a
     [403, { error: 'OAuth participant and client are not enrolled' }, 'tools/list', 'participant_not_enrolled'],
     [400, { error: { message: 'Bad Request: Unsupported protocol version: fixture-secret' } }, 'tools/list', 'unsupported_protocol'],
     [200, { error: { code: -32601, message: 'fixture-secret' } }, 'server/discover', 'rpc_method_not_supported'],
+    [400, { error: { code: -32602, message: 'Invalid _meta envelope for protocol revision 2026-07-28: fixture' } }, 'server/discover', 'invalid_protocol_envelope'],
     [400, { error: 'fixture-secret' }, 'tools/list', 'request_rejected'],
     [200, { result: { tools: [] } }, 'tools/list', 'ok'],
     [404, {}, null, 'not_found'],

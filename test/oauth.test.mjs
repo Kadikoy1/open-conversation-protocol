@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from 'jose';
-import { verifyAccessToken } from '../src/oauth-token.ts';
+import { tokenFailureCategory, verifyAccessToken } from '../src/oauth-token.ts';
 import { authenticate, oauth } from '../src/auth.ts';
 
 const issuer = 'https://issuer.example';
@@ -95,4 +95,18 @@ test('Auth0 RFC 9068 RS256 access token meets the staging contract', async () =>
   await assert.rejects(verify({ iss: issuer.slice(0, -1) }));
   await assert.rejects(verify({ aud: [resource, issuer + 'userinfo'] }));
   assert.equal((await verify({ claims: { client_id: clientId, permissions: ['ocp:access'] } })).inScope, false);
+});
+
+test('JWT diagnostics expose a fixed category rather than a claim value', async () => {
+  for (const [options, expected] of [
+    [{ issuer: 'https://fixture-secret.example' }, 'jwt_issuer'],
+    [{ audience: [resource, 'https://fixture-secret.example'] }, 'jwt_audience'],
+    [{ audience: 'https://fixture-secret.example' }, 'jwt_audience'],
+    [{ omitClient: true }, 'jwt_client_id'],
+    [{ type: 'JWT' }, 'jwt_type'],
+    [{ exp: 1 }, 'jwt_expired'],
+  ]) {
+    const token = await sign(options);
+    await assert.rejects(verifyAccessToken(token, key, issuer, resource), error => tokenFailureCategory(error) === expected);
+  }
 });
