@@ -85,7 +85,7 @@ node ./scripts/ocp-auth0-pkce.mjs $clientId audience
 
 Run each mode separately. Open the Auth0 authorization URL shown in the terminal in a browser on the same computer and sign in as the test user. The listener binds to IPv4 loopback and waits up to five minutes. The browser redirects back with an authorization code for an S256 PKCE exchange.
 
-The runner sends `resource` on both requests in resource mode and sends `audience` only on the authorization request in audience mode. If only audience mode passes, check Auth0's Resource Parameter Compatibility Profile. If both pass, check the tenant's default audience before concluding which parameter selected OCP. Successful output includes only verified claims and the result. The access token and authorization code are neither logged nor saved. The runner validates the token locally using the OCP verifier and the issuer's public keys. It makes no authenticated request to OCP.
+The runner sends `resource` on both requests in resource mode and sends `audience` only on the authorization request in audience mode. If only audience mode passes, check Auth0's Resource Parameter Compatibility Profile. If both pass, check the tenant's default audience before concluding which parameter selected OCP. Successful output includes only verified claims and the result. The access token and authorization code are neither logged nor saved. The runner validates the token locally using the OCP verifier and the issuer's public keys. These two commands validate locally. For the opt-in read-only staging MCP check and the administrator enrolment command, follow the [authenticated smoke test](docs/staging.md#first-read-only-authenticated-mcp-smoke-test).
 
 ## Optional AgentMail bridge
 
