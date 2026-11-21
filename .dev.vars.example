@@ -1,0 +1,8 @@
+# Generate a unique secret, e.g. node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
+OCP_ADMIN_TOKEN=
+# Optional OAuth resource server
+# OCP_PUBLIC_ORIGIN=https://ocp.example.com
+# OAUTH_ISSUER=https://login.example.com
+# OAUTH_JWKS_URL=https://login.example.com/jwks
+# Optional AgentMail webhook ingestion
+# AGENTMAIL_WEBHOOK_SECRET=

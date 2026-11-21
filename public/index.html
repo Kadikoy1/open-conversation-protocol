@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OCP Conversations</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <main>
+    <h1>Conversations</h1>
+    <form id="connect">
+      <label>Participant token <input id="token" type="password" required autocomplete="off"></label>
+      <button>Connect</button>
+    </form>
+    <p id="status" role="status" aria-live="polite"></p>
+    <section id="workspace" hidden aria-label="Conversation workspace">
+      <button id="disconnect" type="button">Disconnect</button>
+      <form id="create">
+        <label>Conversation title <input id="title" maxlength="200" required></label>
+        <button>Create</button>
+      </form>
+      <label>Conversation <select id="rooms"></select></label>
+      <button id="more-rooms" type="button" hidden>More conversations</button>
+      <section id="room" hidden aria-label="Selected conversation">
+        <ol id="messages"></ol>
+        <button id="refresh" type="button">Refresh messages</button>
+        <form id="post">
+          <label>Message <textarea id="body" maxlength="24000" required rows="4"></textarea></label>
+          <button>Post</button>
+        </form>
+      </section>
+    </section>
+  </main>
+</body>
+</html>
