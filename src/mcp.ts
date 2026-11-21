@@ -4,7 +4,7 @@ import { accessScope } from './oauth-token';
 import { body, HttpError, id, rawBody, seq, title } from './http';
 import { Store } from './store';
 
-export async function mcp(request: Request, store: Store | null, challenge?: string) {
+export async function mcp(request: Request, store: Store | null, challenge?: string, raw?: string) {
   const auth = challenge ? { securitySchemes: [{ type: 'oauth2', scopes: [accessScope] }] } : undefined;
   const server = new McpServer({ name: 'ocp', version: '0.1.0' });
   const output = async (operation: (participant: Store) => Promise<unknown>) => {
@@ -52,7 +52,7 @@ export async function mcp(request: Request, store: Store | null, challenge?: str
     enableJsonResponse: true,
   });
   const boundedRequest = request.method === 'POST'
-    ? new Request(request.url, { method: request.method, headers: request.headers, body: await rawBody(request) })
+    ? new Request(request.url, { method: request.method, headers: request.headers, body: raw ?? await rawBody(request) })
     : request;
   await server.connect(transport);
   try {

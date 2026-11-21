@@ -159,6 +159,19 @@ enroll "$CHATGPT_ID" "$CHATGPT_SUB" "$CHATGPT_CLIENT_ID"
 enroll "$CLAUDE_ID" "$CLAUDE_SUB" "$CLAUDE_CLIENT_ID"
 ```
 
+## Diagnose ChatGPT tool discovery
+
+In Wrangler tail, Ok means the Worker finished. An HTTP error or JSON-RPC rejection can still have that outcome. First rerun one plugin scan with JSON tail output. If available, filter locally to `.event.response.status` to see the HTTP status. Keep raw tail output private because Cloudflare can include request metadata.
+
+For method-level diagnosis, add `--var OCP_MCP_DIAGNOSTICS:1` to a separately approved staging deployment. The flag is off by default and only works with the staging origin. Repeat one scan and stream only the custom diagnostic entries. This PowerShell pipeline requires jq.
+
+```powershell
+npx wrangler tail ocp-staging --config wrangler.staging.jsonc --format json |
+    jq -c '.logs[]?.message[]? | strings | fromjson? | select(.event == "ocp_mcp_diagnostic")'
+```
+
+Each entry contains the HTTP method, fixed path, HTTP status, allowlisted MCP method and fixed category. Look for `origin_denied`, `accept_mismatch`, `unsupported_protocol`, `rpc_method_not_supported`, `invalid_credential`, `insufficient_scope` or `participant_not_enrolled`. A discovery GET with HTTP 200 should have category `ok`. A rate-limited or non-POST request can have a null RPC method. Remove the flag on the next approved deploy. [Wrangler real-time logs](https://developers.cloudflare.com/workers/observability/logs/real-time-logs/)
+
 ## First read-only authenticated MCP smoke test
 
 Run these steps manually after the reviewed Worker is approved and deployed. The utility requires the new atomic admin route, `POST /api/admin/participants/oauth`. The existing two-step admin API remains available for other workflows. The new route uses the existing OAuth enrollment table and requires no migration.

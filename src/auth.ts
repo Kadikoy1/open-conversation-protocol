@@ -5,6 +5,7 @@ import { verifyAccessToken } from './oauth-token.ts';
 export type Env = Pick<Cloudflare.Env, 'DB' | 'REQUEST_LIMIT' | 'PARTICIPANT_LIMIT'> & {
   OCP_ADMIN_TOKEN?: string;
   OCP_PUBLIC_ORIGIN?: string;
+  OCP_MCP_DIAGNOSTICS?: string;
   OAUTH_ISSUER?: string;
   OAUTH_JWKS_URL?: string;
   AGENTMAIL_WEBHOOK_SECRET?: string;
